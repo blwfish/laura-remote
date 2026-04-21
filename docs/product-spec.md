@@ -117,6 +117,17 @@ Caveats with dual-camera Y:
 - Ready-pin confirmation can only be monitored for one body (the line from the second camera is left disconnected on the Y), so `OK_FIRED` reflects that camera only.
 - Both cameras share the same keep-alive pulse cadence, which is usually the desired behavior.
 
+#### Why a Y-cable and not two jacks on the RX?
+
+A second TRRS jack on the RX was considered and rejected for v1. It would have one genuine win — **independent Ready-pin monitoring on dual 10-pin rigs**, so an ACK could carry per-camera outcome codes (e.g., `cam-A: OK_FIRED, cam-B: WARN_CMD_SENT_NO_FIRE`). But the costs land on every single-camera RX:
+
+- Doubled camera-side parts count: 4 optos instead of 2, two Ready-pin input networks, two cable-class sense contacts, ~16 GPIO pins instead of ~8.
+- PCB and enclosure grow by ~20 %, pushing against the matchbox-size target; SMA + USB-C + two TRRS jacks gets crowded on a small RX's edge.
+- Firmware grows a per-jack plug-detection, cable-class, and outcome-reporting path; ACK format has to carry two outcomes.
+- Independent Ready is a niche-within-a-niche: most realistic dual-cam setups are MC-DC2 pairs (no Ready anyway), so the extra capability pays off only on a dual-10-pin flag-stand rig — a configuration that's possible but not routine.
+
+The Y-cable covers the common cases (both MC-DC2, or MC-DC2 + 10-pin, or single-Ready dual-10-pin) at zero RX cost. If dual-10-pin rigs become frequent in the field, a wider `RX-Dual` variant with a second fully-wired jack is a clean v1.1 upgrade on the same firmware and protocol — `RX_ACK` is already extensible via the length-byte convention, so adding a per-jack outcome field later is non-breaking.
+
 ### Practical note on the fire-confirmation asymmetry
 
 Using a 3-conductor cable (standard PW or equivalent) means the RX can't independently verify "the camera fired," because the Ready-pin signal is simply not carried on those cables. But the short, reliable, physical wire from the RX to the camera is not the part of the system that's prone to failure — the radio link is. If the RX receives the command and asserts the trigger contact, the camera fires. The ACK still tells you unambiguously that the radio delivered the command. The only thing you lose is an independent sanity check for the ~0.1 % of cases where the camera was in an unreportable bad state (card full, mirror lock, firmware hang) — failures that will show up the moment you review footage anyway.
