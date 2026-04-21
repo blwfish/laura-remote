@@ -29,9 +29,9 @@ The RX PCB is a single design serving both pigtail variants; the difference is p
 - **Modulation**: LoRa.
 - **Bandwidth**: 125 kHz.
 - **Coding rate**: 4/5.
-- **Spreading factor**: adaptive. TX starts at SF7 and falls back to SF10 then SF12 on missed ACK.
+- **Range tier**: adaptive. TX starts at *short* and falls back to *medium* then *long* on missed ACK. (These user-facing labels map to LoRa spreading factors SF7, SF10, and SF12 respectively; see the fallback ladder table below. Throughout the rest of this document, logs, UI text, and firmware APIs, the tier names are canonical and SF values are implementation detail.)
 - **TX power**: up to +22 dBm (SX1262 max). Legal within US ISM duty-cycle rules at this power/bandwidth combination.
-- **Preamble length**: standard (12 symbols) for SF7 packets; extended (long enough to cover RX CAD sniff interval) for commands targeting sleeping RXs (specifically `KA_ON` wake packets). Default sniff interval is 2 s, so wake preambles use a 3-second equivalent.
+- **Preamble length**: standard (12 symbols) for short-tier packets; extended (long enough to cover RX CAD sniff interval) for commands targeting sleeping RXs (specifically `KA_ON` wake packets). Default sniff interval is 2 s, so wake preambles use a 3-second equivalent.
 
 ### Channels
 
@@ -45,13 +45,15 @@ Three channels in the ISM band:
 
 Selected manually via TX mode button, or automatically cycled on repeated failure. Repeaters are pinned to channel 0 by default; TX falls back to channel 0 when it fails to reach the RX directly.
 
-### Spreading factor fallback ladder
+### Range tier fallback ladder
 
-| Step | SF | BW | Airtime (16-byte payload) | Sensitivity | Used for |
-| --- | --- | --- | --- | --- | --- |
-| 1 | SF7 | 125 kHz | ~50 ms | -123 dBm | Normal shots |
-| 2 | SF10 | 125 kHz | ~370 ms | -132 dBm | Retry after miss |
-| 3 | SF12 | 125 kHz | ~1500 ms | -137 dBm | Last-resort retry |
+| Step | Tier | SF (impl.) | BW | Airtime (16-byte payload) | Sensitivity | Used for |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | `short` | SF7 | 125 kHz | ~50 ms | -123 dBm | Normal shots |
+| 2 | `medium` | SF10 | 125 kHz | ~370 ms | -132 dBm | Retry after miss |
+| 3 | `long` | SF12 | 125 kHz | ~1500 ms | -137 dBm | Last-resort retry |
+
+Tier names (`short` / `medium` / `long`) are the canonical form in logs, ACK payloads, config, and UI. SF numbers are used only when directly configuring the LoRa modem.
 
 ## Packet format
 
@@ -153,24 +155,24 @@ The MC-DC2 variant cannot observe Ready-pin transitions because the MC-DC2 port 
 IDLE
   │  button press
   ▼
-BUILD_PACKET (seq#, current SF, MIC)
+BUILD_PACKET (seq#, current range tier, MIC)
   │
   ▼
 TRANSMIT
   │
   ▼
-WAIT_REPEATER_ACK (timeout ~150 ms × SF-scale)
+WAIT_REPEATER_ACK (timeout ~150 ms × tier-scale)
   │                                    │
   │ received                            │ timeout
   ▼                                     ▼
 SET_LINK_LED_GREEN             (record: no repeater)
   │                                    │
   ▼                                    ▼
-         WAIT_RX_ACK (timeout ~500 ms × SF-scale)
+         WAIT_RX_ACK (timeout ~500 ms × tier-scale)
                     │                   │
                     │ received           │ timeout
                     ▼                   ▼
-              SET_FIRE_LED        RETRY (escalate SF)
+              SET_FIRE_LED        RETRY (escalate tier)
               DISPLAY OUTCOME         │
               LOG EVENT                └─► after 3 retries → LOG+RED
               IDLE
@@ -209,7 +211,7 @@ DROP    PROCESS_CMD
         BUILD_RX_ACK (outcome + telemetry)
           │
           ▼
-        TRANSMIT_ACK (via same SF as received)
+        TRANSMIT_ACK (via same range tier as received)
           │
           ▼
         LOG_EVENT
@@ -249,7 +251,7 @@ DROP         IS_REPEAT_BIT_SET?
 
 ## Pairing flow
 
-1. User holds PAIR button on RX for >2 s. RX enters pairing mode, LED breathes blue, listens on channel 0, SF10 for 60 s.
+1. User holds PAIR button on RX for >2 s. RX enters pairing mode, LED breathes blue, listens on channel 0, medium-range tier for 60 s.
 2. User presses PAIR on TX. TX sends `PAIR_BEACON` with candidate (network_id, device_addr) plus a 16-byte nonce. Transmitted plaintext (this is the one exception; the MIC is computed with a well-known bootstrap key).
 3. RX receives, performs ECDH-lite key derivation: final per-pair key = HMAC-SHA256(bootstrap_key, network_id || device_addr || nonce). Replies with `PAIR_ACCEPT` MIC'd under the new key.
 4. TX validates `PAIR_ACCEPT`, both persist (network_id, device_addr, shared_key) to flash. LEDs on both sides flash green.
@@ -276,7 +278,7 @@ Offset  Size  Field
 6       1     Counterparty address (target on TX, source on RX)
 7       2     Sequence number
 9       1     Outcome code
-10      1     Final SF used
+10      1     Final range tier used (0=short, 1=medium, 2=long)
 11      1     Retry count
 12      1     RSSI (signed dBm) of last heard return traffic
 13      1     RSSI from repeater (signed dBm); 0x7F if N/A
@@ -291,7 +293,7 @@ Offset  Size  Field
 JSONL (one JSON object per line). Each record self-describing, including field names; field-value dictionary drops the fixed 20-byte layout for readability.
 
 ```
-{"t":"2026-05-17T14:32:11Z","type":"SHOOT","target":"flagstand","seq":4521,"outcome":"OK_FIRED","sf":"SF7","retries":0,"rssi":-82,"rssi_rpt":null,"batt":82,"temp":48,"ready":"high→low→high"}
+{"t":"2026-05-17T14:32:11Z","type":"SHOOT","target":"flagstand","seq":4521,"outcome":"OK_FIRED","range":"short","retries":0,"rssi":-82,"rssi_rpt":null,"batt":82,"temp":48,"ready":"high→low→high"}
 ```
 
 ## Timing constants
@@ -302,14 +304,14 @@ JSONL (one JSON object per line). Each record self-describing, including field n
 | `CAD_DURATION` | 2 ms | Per-channel CAD check |
 | `PREAMBLE_STANDARD` | 12 symbols | Normal commands |
 | `PREAMBLE_WAKE` | 3000 ms equivalent | `KA_ON` and other commands targeting potentially-sleeping RXs |
-| `REPEATER_ACK_TIMEOUT` | 150 ms × SF-scale | TX wait for repeater ack |
-| `RX_ACK_TIMEOUT` | 500 ms × SF-scale | TX wait for RX ack |
+| `REPEATER_ACK_TIMEOUT` | 150 ms × tier-scale | TX wait for repeater ack |
+| `RX_ACK_TIMEOUT` | 500 ms × tier-scale | TX wait for RX ack |
 | `FIRE_DETECTION_WINDOW` | 300 ms | RX waits for Ready-pin transition |
 | `KA_DEFAULT_INTERVAL` | 20 s | Default keep-alive pulse interval |
 | `KA_PULSE_DURATION` | 100 ms | Focus pin asserted per keep-alive tick |
 | `MAX_RETRIES` | 3 | Per TX command |
 
-"SF-scale" = multiply by (airtime at current SF / airtime at SF7).
+"tier-scale" = multiply by (airtime at current tier / airtime at short tier).
 
 ## Post-session tooling
 
@@ -325,7 +327,7 @@ laura-dump --port /dev/tty.usbmodem123 --out tx-log-2026-04-20.jsonl
 
 Python script that takes a TX log, any number of RX logs, and a folder of RAW files. Matches events to files by timestamp + camera serial. Output:
 
-- XMP sidecars next to each matched RAW, with keywords (`remote-fired`, `cam-<name>`, `tx-<name>`, optionally `via-repeater`) and custom fields (RSSI, SF, retry count, RX temp, RX battery).
+- XMP sidecars next to each matched RAW, with keywords (`remote-fired`, `cam-<name>`, `tx-<name>`, optionally `via-repeater`) and custom fields (RSSI, range tier, retry count, RX temp, RX battery).
 - A session report (`laura-report.txt`) listing: total shots commanded, fired, missed; orphan RAW files (no matching TX event); per-RX drop rate; RSSI trend per RX; session-level notes from the RX log (Ready-pin gaps, keep-alive anomalies).
 
 ### `laura-config`

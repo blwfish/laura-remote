@@ -39,7 +39,7 @@ The radio link is the unreliable part of the chain; the ~20 cm of wire between t
 
 ### Range
 
-LoRa at 915 MHz with adaptive spreading factor: normal shots go at SF7 (fast, ~50 ms round-trip), falling back automatically to SF10 and SF12 on missed acknowledgment. SF12 adds significant link budget at the cost of a second or two of latency — acceptable for the worst-case shot, and you'll see in the log what fallback was used.
+LoRa at 915 MHz with three adaptive **range tiers**: normal shots go at **short-range** (fast, ~50 ms round-trip), falling back automatically to **medium-range** and **long-range** on missed acknowledgment. Long-range adds significant link budget at the cost of a second or two of latency — acceptable for the worst-case shot, and you'll see in the log which tier the shot finally landed on.
 
 Estimated workable range: comfortable at 2,000+ ft LOS, marginal through dense fencing at max distance. Add a small Yagi on the TX for the corner cases.
 
@@ -71,7 +71,7 @@ Three channels in the 902–928 MHz ISM band, selectable manually or with automa
 
 **Session-level statistics** — per-RX drop rate, RSSI trend, link-health snapshot — viewable on the TX OLED. Useful mid-race to notice "turn 1 cam is drifting" before it fully fails.
 
-**Lightroom integration** — a post-session Python tool reads both logs, matches events against RAW files by timestamp + camera serial, and writes XMP sidecars with keywords (`remote-fired`, `cam-flagstand`, `tx-billy`, `via-repeater`) plus custom fields (RSSI, SF, temp). Filter the Lightroom catalog by remote-triggered vs. handheld shots, or by which camera fired them.
+**Lightroom integration** — a post-session Python tool reads both logs, matches events against RAW files by timestamp + camera serial, and writes XMP sidecars with keywords (`remote-fired`, `cam-flagstand`, `tx-billy`, `via-repeater`) plus custom fields (RSSI, range tier, temp). Filter the Lightroom catalog by remote-triggered vs. handheld shots, or by which camera fired them.
 
 ### Clock
 
@@ -108,7 +108,7 @@ For typical usage patterns:
 
 ## Scenarios
 
-**Sebring flag stand, turn 1 → flag stand:** TX at turn 1, RX on camera at flag stand, ~2,000 ft, 8-ft chain-link in the path. Direct link at SF10. Green-green on every shot. Optional Yagi on TX for margin.
+**Sebring flag stand, turn 1 → flag stand:** TX at turn 1, RX on camera at flag stand, ~2,000 ft, 8-ft chain-link in the path. Direct link, medium-range tier. Green-green on every shot. Optional Yagi on TX for margin.
 
 **Road America turn 1 → turn 14:** no LOS. Repeater on the flag stand (which sees both). Two-hop path. TX shows repeater-ACK + camera-ACK separately.
 
