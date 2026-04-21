@@ -371,6 +371,10 @@ Python script for on-device configuration over USB-C serial: set clock manually,
 - Real ECDH pairing.
 - OTA firmware updates over radio.
 
+**Speculative v3, pending viability testing:**
+- **NX Field-like camera control over LoRa** — inventory, property get/set (ISO, shutter, aperture, WB, focus mode), remote trigger, thumbnail + EXIF download. Built on top of the v2 USB-C/PTP stack: the RX gains a USB-C host port to the camera and becomes a translator that turns LoRa command packets into PTP transactions. Not "IP over LoRa" — a Laura-protocol extension with new command codes, no network stack, no LoRaWAN, no tunneling. A laptop-side tool drives it over USB from the TX.
+- **Prerequisite: viability test against a real NX Field deployment.** NX Field was designed around 1000base-T Ethernet; WiFi support was added late and reluctantly. It is not at all clear that NX Field's control-plane operations function on their own when live view is disabled — there may be hard throughput assumptions in discovery, heartbeat, or session management that make it unusable on a ~400 byte/sec sustained link. Before any firmware work, confirm empirically on an NX Field setup that inventory / config / trigger operations work standalone with live view off and a deliberately rate-limited network path (shape traffic to match LoRa's budget). If NX Field falls over without live view's bandwidth headroom, this direction is a dead end, and the alternative is a Laura-native PTP-over-LoRa protocol that bypasses the NX Field layer entirely.
+
 ## Open questions
 
 1. **Duration of the `HALF` command default** — is 500 ms of focus-pin assertion appropriate, or should it be user-configurable per shot?
