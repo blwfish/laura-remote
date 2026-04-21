@@ -120,7 +120,7 @@ Groups are assigned meaning by the operator at pairing time. Suggested conventio
 | 0x07 | `PAIR_BEACON` | TX → broadcast | candidate_net_id, candidate_addr, pairing_nonce | Pairing handshake. See pairing flow. |
 | 0x08 | `PAIR_ACCEPT` | RX → TX | confirmed_net_id, confirmed_addr | Pairing response. |
 | 0x10 | `RX_ACK` | RX → TX | outcome_code, telemetry (see below) | Authoritative ACK for a TX command. |
-| 0x11 | `REPEATER_ACK` | Repeater → TX | heard_seq# | Immediate "I got it, forwarding" from the repeater. |
+| 0x11 | `REPEATER_ACK` | Repeater → TX | heard_seq#, repeater_battery_pct, repeater_battery_mv_scaled | Immediate "I got it, forwarding" from the repeater. Battery fields piggybacked so TX sees repeater battery on any relayed shot without needing a separate query. |
 | 0x1F | `RESERVED` | — | — | — |
 
 ### Outcome codes (returned in `RX_ACK`)
@@ -231,7 +231,7 @@ DROP    PROCESS_CMD
 ### Repeater state machine
 
 ```
-LISTEN (continuous RX or CAD — firmware flag)
+LISTEN (continuous RX — default; CAD sniff available as a power-save option but not recommended for active use, see note below)
   │
   ▼
 RECEIVE
@@ -257,6 +257,8 @@ DROP         IS_REPEAT_BIT_SET?
                        LISTEN
 ```
 
+**Repeater LISTEN mode.** The repeater defaults to continuous RX (~5 mA draw, ~16 days on 2×AA). CAD sniff is available as a firmware option but imposes a ~3 s wake preamble on every forwarded packet (to guarantee the TX's transmission spans at least one sniff window). That penalty compounds with tier escalation — a shot that retries through all three range tiers could take 8+ seconds under CAD — which is incompatible with "press the shutter while the car is in the corner" use. Continuous RX is the right default; CAD is reserved for future standalone scenarios (unattended repeater left out for weeks).
+
 ## Pairing flow
 
 1. User holds PAIR button on RX for >2 s. RX enters pairing mode, LED breathes blue, listens on channel 0, medium-range tier for 60 s.
@@ -269,9 +271,20 @@ Simpler than real ECDH but adequate — the bootstrap key is shared across all L
 ## Security
 
 - **Per-network shared key** (256 bit), derived at pairing, stored in MCU flash.
-- **MIC** on every packet: HMAC-SHA256 over (header + payload), truncated to 32 bits. 32-bit MIC is below modern best practice, but packet sizes and airtime budgets make it the reasonable trade-off; the cost of forging a packet that triggers a camera is not high, but casual interference is the actual threat.
+- **MIC** on every packet: HMAC-SHA256 over (header + payload), truncated to 32 bits. 32-bit MIC is below modern crypto best practice, but is more than adequate here: the effective key space is channel × SF × sync word × 16-bit network ID × 32-bit MIC, and the actual threat model is accidental RF collision with another photographer's gear, not targeted packet forgery.
 - **Replay protection**: RXs track the last 32 seq# per source per network and reject duplicates.
 - **No OTA firmware updates** over the radio in v1. Firmware updates happen over USB-C.
+
+## Channel hygiene
+
+Every TX, RX, and repeater maintains a **non-Laura channel activity counter** — a running count of CAD hits (preamble-detect or energy-above-threshold events) that did *not* result in a successful Laura packet demod on the current channel. This surfaces non-Laura traffic competing for the band (LoRaWAN gateways, other ISM users, co-located industrial equipment).
+
+- Counter resets at session start (detected by GPS-sync-acquired on the TX, or by boot on RX/repeater).
+- RX and repeater include their counter in extended STATUS_QUERY responses.
+- TX displays its own counter plus the maximum across all paired devices on the session-stats OLED screen.
+- Events above a configurable rate (default: 10 non-Laura hits per minute sustained) are logged to the event log with a `WARN_NOISY_CHANNEL` event type.
+
+Laura-vs-Laura detection (another photographer's Laura system on the same channel) is not surfaced as a counter, because coordinating photographers agree channels in advance and collision between unassociated Laura users is a non-issue in practice. If it becomes one, the existing MIC-fail and foreign-network-ID cases can be enumerated from the packet path trivially.
 
 ## Log format
 
@@ -361,6 +374,10 @@ Python script for on-device configuration over USB-C serial: set clock manually,
 ## Open questions
 
 1. **Duration of the `HALF` command default** — is 500 ms of focus-pin assertion appropriate, or should it be user-configurable per shot?
-2. **Repeater LISTEN mode default** — continuous RX (better latency, ~5 mA draw) vs. CAD sniff (longer latency, ~200 µA draw)? User-configurable; defaulting to CAD seems right since battery life is the limit.
-3. **Does the TX need a piezo buzzer for audible feedback on shots?** Cheap to add if useful; would let you fire without looking at the OLED.
-4. **Second TX support** — Vic and Billy both operating identical units within a shared network. Partly answered by separate network IDs, but group fires could benefit from coordination. Defer until both units exist.
+2. **Second TX support** — Vic and Billy both operating identical units within a shared network. Partly answered by separate network IDs, but group fires could benefit from coordination. Defer until both units exist.
+
+## Resolved decisions
+
+- **Repeater LISTEN mode** → continuous RX (not CAD). CAD's battery savings are real but the ~3 s wake-preamble penalty per shot (and its compounding under tier escalation) makes CAD incompatible with shooting racing where timing of the shutter press is precisely what matters. Continuous RX still gives ≥2 days on 2×AA, which exceeds the design target (see Battery targets, product-spec).
+- **TX piezo buzzer** → not included. Track environments (unmuffled race cars + in-ear scanner) have no remaining audio attention; an audible cue would be inaudible and therefore misleading. Rely on LEDs and OLED only.
+- **32-bit MIC** → kept at 32 bits. Combinatorial space (channel × SF × sync word × 16-bit network ID × 32-bit MIC) already makes casual-interference collision statistically negligible. Longer MIC would cost ~15 % airtime at long-tier for no practical gain against the actual threat model (nearby-photographer RF, not targeted attack).

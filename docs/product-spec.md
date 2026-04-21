@@ -24,7 +24,7 @@ A three-part system built around **LoRa** at 915 MHz for range, **bidirectional 
 - **RX** — small receiver, velcros or magic-arm-mounts to the camera. A 3.5 mm TRRS jack on the RX accepts any PocketWizard-compatible pre-release cable (N10 for Nikon round 10-pin bodies, N3 for Nikon MC-DC2 bodies, and equivalents for other brands). Photographers already carrying PW cables plug straight in. An optional 4-conductor `Laura-N10` cable for 10-pin bodies adds a Ready-pin line for full fire-confirmation.
 - **Repeater** — optional bridging unit for venues where no LOS exists between TX and RX (Road America, Lime Rock). Same hardware as the RX; different firmware mode.
 
-All three run on 2×AA (Eneloop NiMH or Linogy Li-ion). Expected battery life is days-to-weeks depending on duty cycle — far exceeding a race weekend.
+All three run on 2×AA (Eneloop NiMH or Linogy Li-ion). Battery-life targets: **1 day floor, 2 days design target, 3 days cap** — no optimization effort beyond that point, since everything is torn down and recharged between events and batteries charge overnight anyway. See the Battery feature section below for low-battery indication behavior.
 
 ## Key features
 
@@ -71,6 +71,8 @@ Three channels in the 902–928 MHz ISM band, selectable manually or with automa
 
 **Session-level statistics** — per-RX drop rate, RSSI trend, link-health snapshot — viewable on the TX OLED. Useful mid-race to notice "turn 1 cam is drifting" before it fully fails.
 
+**Non-Laura channel activity counter** — each device counts RF activity on our channel that did not demod to a valid Laura packet. Surfaced on the session-stats OLED as a "noisy channel" indicator; a sustained high rate (default: >10 hits/min) is logged as `WARN_NOISY_CHANNEL`. Tells you when something else in the 915 MHz ISM band is competing for the airwaves and you should consider switching channels. Laura-vs-Laura interference isn't counted separately because channel coordination between paired photographers is handled ahead of time.
+
 **Lightroom integration** — a post-session Python tool reads both logs, matches events against RAW files by timestamp + camera serial, and writes XMP sidecars with keywords (`remote-fired`, `cam-flagstand`, `tx-billy`, `via-repeater`) plus custom fields (RSSI, range tier, temp). Filter the Lightroom catalog by remote-triggered vs. handheld shots, or by which camera fired them.
 
 ### Clock
@@ -82,6 +84,15 @@ Coin-cell backup on the RTC so clock survives battery swaps.
 ### Pairing
 
 Press and hold a button on the RX while the TX transmits a pair beacon. Network ID, device address, and encryption key exchanged in one handshake. No dipswitches, no menus, no serial numbers to write down.
+
+### Battery
+
+Design targets on 2×AA NiMH (~2000 mAh): **1 day floor, 2 days target, 3 days cap.** All three device roles comfortably meet the 2-day target — the repeater in continuous RX (~5 mA) uses ~240 mAh over 2 days; the TX in active use with OLED and periodic transmits sits well inside budget; the RX on CAD-sniff sips single-digit milliamp-hours per day.
+
+Low-battery indication:
+- **TX own battery** — persistent percentage glyph on the OLED; under 20 %, the TX flashes the Fire LED amber between shots as a passive warning.
+- **RX battery** — telemetry byte in every ACK. TX OLED shows a per-RX battery indicator on the live-view screen; under 20 % for any paired RX, the TX displays a warning banner at the next button press.
+- **Repeater battery** — piggybacked on every `REPEATER_ACK`. Same OLED indicator and warning-banner logic as RX.
 
 ## Camera compatibility
 

@@ -86,7 +86,7 @@ Duration: ~1 week.
 
 ### Phase 5 — Power validation
 
-Drop the Wio-E5 mini's onboard 3.3 V regulator, power it from a breadboarded 2×AA + TI TPS61023 eval module instead. Measure current consumption in each state (idle, CAD sniff, TX burst, RX with peripherals). Validate the battery-life math from the product spec against reality.
+Drop the Wio-E5 mini's onboard 3.3 V regulator, power it from a breadboarded 2×AA + TI TPS61023 eval module instead. Measure current consumption in each state (idle, CAD sniff, continuous RX for repeater role, TX burst, RX with peripherals). Validate against the product-spec battery targets: **1 day floor, 2 days design target, 3 days cap**. Key numbers to confirm: repeater continuous-RX draw ≤ ~5 mA (gives ≥16 days on 2×AA — comfortable 2-day target), RX CAD-sniff average ≤ ~250 µA, TX active-use average under budget for a 12-hour race day + standby overnight.
 
 Duration: ~2 days.
 
