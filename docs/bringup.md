@@ -50,22 +50,23 @@ Duration: ~1 week.
 
 ### Phase 2 — Output stage on RX
 
-Breadboarded TLP175A opto, wired to a cut MC-30-style pigtail (round 10-pin) or MC-DC2 cable. GPIO from the RX Wio-E5 drives the opto's LED; opto's FET pulls the camera's focus or shutter pin to ground.
+Breadboarded TLP175A optos (one each for focus and shutter), wired to a 3.5 mm TRRS jack on the breadboard. PW-compatible pre-release cables (PW N10 for round 10-pin bodies, PW N3 for MC-DC2 bodies) plug from the TRRS jack to the bench camera. GPIOs on the RX Wio-E5 drive the opto LEDs; the opto FETs pull the camera's focus/shutter pins to ground.
 
-- Test on a bench DSLR (see Bench cameras below).
-- For round 10-pin: also wire the Ready pin as an MCU input (with pull-up), watch for the exposure transition.
-- For MC-DC2: test focus (half-press) and shutter (full-press) pulses only; no Ready pin.
+- Test on a bench DSLR with standard PW cables first (see Bench cameras below).
+- Build a `Laura-N10` 4-conductor cable: cut an aftermarket MC-30-style round 10-pin cable, terminate with a 4-pole TRRS plug, and route the Ready pin out to ring 2. Use this cable with a 10-pin body and verify the Ready-pin input sees the exposure transition on every shot.
+- Verify the TRRS jack's 4-pole/3-pole sense contact behaves correctly: a standard 3-conductor plug should leave ring 2 grounded (firmware gates off Ready-pin logic); a 4-conductor `Laura-N10` plug should break that ground and expose Ready to the MCU input (firmware enables Ready-pin logic).
+- For MC-DC2: test focus (half-press) and shutter (full-press) pulses only via PW N3; no Ready pin on that port regardless of cable.
 
-Goal: RX board can reliably fire and (on 10-pin) observe fire confirmation.
+Goal: RX board can reliably fire and (with `Laura-N10`) observe fire confirmation, and cable-class detection works.
 
-Duration: ~1 week.
+Duration: ~1.5 weeks (slightly longer than the original estimate because the custom cable build is new).
 
 ### Phase 3 — Protocol and state machines
 
 All of [protocol.md](protocol.md) implemented in firmware. Packet format, HMAC, sequence numbers, ACK round-trip, retries with tier escalation, dedupe, CAD sniff, keep-alive mode.
 
 - TX firmware grows the full TX state machine.
-- RX firmware grows the full RX state machine including the MC-DC2 / 10-pin variant branch.
+- RX firmware grows the full RX state machine including cable-class detection and the Ready-capable vs 3-conductor branch.
 - Add a third Wio-E5 as a repeater, test forwarding and two-ACK behavior.
 - Exercise via Python CLI from the laptop until the full command set works over the radio.
 
@@ -107,7 +108,7 @@ Duration: 1 day + iteration.
 
 Only now do we design the custom RX and TX PCBs. The LoRa-E5 module footprint drops into KiCad; all the other circuit blocks have been validated on breadboard.
 
-- RX PCB first (simpler, covers both pigtail variants and the repeater role via DNP).
+- RX PCB first (single build; TRRS jack with 4-pole sense handles all cable classes, and the repeater role is covered by leaving the output stage / TRRS jack DNP).
 - TX PCB second.
 - Send both out for fabrication + assembly at JLCPCB or PCBWay.
 - Flash with firmware already working on Wio-E5s.
@@ -127,7 +128,7 @@ Never bring up on working cameras. Old D-bodies on eBay are adequate and cost le
 | Round 10-pin | **Vic's D300** | D200 / D300 / D700 on eBay, typically $100–200 |
 | MC-DC2 | TBD (ask Vic about D90 / D7000 / D780) | D90 on eBay, typically $50 |
 
-Between Vic's D300 and whatever MC-DC2 body turns up, both variants of the output stage can be bench-tested without ever plugging into a current-fleet camera.
+Between Vic's D300 and whatever MC-DC2 body turns up, both cable classes (`Laura-N10` with Ready-pin and standard 3-conductor PW-compatible) can be bench-tested without ever plugging into a current-fleet camera.
 
 ## Bring-up BOM
 
@@ -136,8 +137,12 @@ Between Vic's D300 and whatever MC-DC2 body turns up, both variants of the outpu
 | Seeed Wio-E5 mini dev board | 5 | $75 | Three for TX/RX/repeater roles, two spares |
 | Solderless breadboard kit | 1 | $25 | |
 | TLP175A opto-isolators | 10 | $15 | Multiple for iteration |
-| MC-DC2 aftermarket cable (to cut) | 2 | $20 | Kiwifotos / PHOLSY etc. |
-| MC-30-equivalent cable (to cut) | 2 | $50 | Aftermarket round 10-pin |
+| PW-compatible N3 cable (MC-DC2) | 2 | $30 | PW CM-N3 or aftermarket equivalent; used as-is for MC-DC2 bench testing |
+| PW-compatible N10 cable (round 10-pin) | 1 | $25 | PW CM-N10 or aftermarket; used as-is for 10-pin fire/focus testing without Ready |
+| MC-30-equivalent aftermarket cable (to cut for `Laura-N10`) | 2 | $50 | Terminate with 4-pole TRRS plug; route Ready pin to ring 2 |
+| 3.5 mm TRRS jack with 4-pole sense contact | 5 | $15 | e.g. Switchcraft 35RAPC4BV3 or CUI SJ-43615; breadboard-mountable |
+| 4-pole 3.5 mm TRRS plugs (solderable) | 5 | $10 | For `Laura-N10` cable assembly |
+| 3.5 mm stereo Y-cable | 2 | $10 | For dual-camera testing |
 | u-blox MAX-M10 GPS breakout | 1 | $20 | Sparkfun / Adafruit / Seeed |
 | 128×64 SSD1306 OLED (I²C) | 2 | $10 | |
 | TPS61023EVM boost eval | 1 | $25 | For phase 5 power validation |
@@ -149,7 +154,7 @@ Between Vic's D300 and whatever MC-DC2 body turns up, both variants of the outpu
 | Eneloop AA NiMH (4×AA pack) | 1 | $20 | Pro-pack ideally |
 | Misc: R, C, tactile buttons, LEDs, headers, wire | — | $30 | |
 
-**Total: ~$345–425** depending on MC-DC2 body availability.
+**Total: ~$415–495** depending on MC-DC2 body availability.
 
 One PCB spin (RX + TX, small quantity, assembled) is ~$500 by itself. Bring-up on dev boards pays for itself before the first PCB order.
 
