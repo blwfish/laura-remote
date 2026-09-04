@@ -12,15 +12,17 @@ Draft 0.1. This is the contract between hardware and firmware; PCB and firmware 
 
 ## Hardware variants
 
-Three roles, one RX hardware build:
+Five roles, two hardware builds — no dedicated PCB for Gateway or Camera Agent; each rides an existing board in a host-driven firmware mode, the same pattern already used for Repeater:
 
 | Role | PCB | Camera interface | Notes |
 | --- | --- | --- | --- |
 | TX | TX PCB | none | Handheld transmitter. GPS, OLED, buttons, LEDs. |
 | RX | RX PCB | 3.5 mm TRRS jack | Accepts any PocketWizard-compatible pre-release cable (PW N10 / N3 / equivalents for other brands). An optional `Laura-N10` 4-conductor cable carries the Nikon round 10-pin Ready signal to enable full fire-confirmation. |
 | Repeater | RX PCB | none (TRRS jack DNP) | Same PCB as RX. Output stage unpopulated. |
+| Gateway | TX PCB, host-driven mode | none | Same board as TX, different firmware: instead of buttons/OLED, a USB-C-attached host (e.g. RPi Zero 2 W) injects commands and reads events over the same USB-C link TX already uses for firmware updates. See **Host-driven nodes** below. |
+| Camera Agent (radio side) | RX PCB, host-driven mode | none (TRRS jack DNP) | Same board as RX/repeater, different firmware: forwards received commands to a USB-C-attached host instead of driving TRRS optos; the host acts on the camera separately, over its own USB link running nikon-fleet's SDK integration. See **Host-driven nodes** below. |
 
-Camera support is determined by the cable, not the RX. The RX detects cable class via a 4-pole/3-pole sense contact in the TRRS jack: a 4-conductor plug (the `Laura-N10`) routes Ready-pin to an MCU input through a protection network, and firmware enables Ready-pin-dependent logic; a 3-conductor plug leaves the Ready input grounded through the sense contact, and firmware gates off Ready-pin logic and reports `OK_CMD_SENT` on shot commands regardless of camera body.
+Camera support (RX role) is determined by the cable, not the RX. The RX detects cable class via a 4-pole/3-pole sense contact in the TRRS jack: a 4-conductor plug (the `Laura-N10`) routes Ready-pin to an MCU input through a protection network, and firmware enables Ready-pin-dependent logic; a 3-conductor plug leaves the Ready input grounded through the sense contact, and firmware gates off Ready-pin logic and reports `OK_CMD_SENT` on shot commands regardless of camera body.
 
 TRRS jack pinout (RX side):
 
@@ -86,7 +88,7 @@ All fields big-endian. Total header overhead: 8 bytes. Payload variable, 0–32 
 | Field | Size | Notes |
 | --- | --- | --- |
 | Network ID | 16 bits | Per-photographer. Set at pairing. Distinguishes Billy's system from Vic's. |
-| Src Addr | 8 bits | Originator's address within the network. TX = 0x01 by convention; RXs = 0x10–0xFE. |
+| Src Addr | 8 bits | Originator's address within the network. See Address space below. |
 | Dst Addr | 8 bits | Target. 0xFF = broadcast. 0xE0–0xFE reserved for group addresses. |
 | Seq# | 16 bits | Monotonically increasing per source. Used for dedupe and gap detection. |
 | F (Fwd expected) | 1 bit | 1 = sender expects this packet to be forwarded by a repeater if one exists. Set on TX→RX commands. |
@@ -100,8 +102,10 @@ All fields big-endian. Total header overhead: 8 bytes. Payload variable, 0–32 
 | Range | Meaning |
 | --- | --- |
 | 0x00 | Reserved / invalid |
-| 0x01 | TX (primary; a second TX, if any, uses 0x02) |
-| 0x10–0xDF | Receivers (up to ~200 per network) |
+| 0x01 | TX (primary handheld unit) |
+| 0x02 | Second TX (a second human-operated handheld, e.g. Vic's unit) |
+| 0x03–0x0F | Gateway(s) — deliberately its own range, distinct from a second human TX, even though Gateway hardware is a TX PCB in host-driven mode. Multiple Gateways on one network are unlikely but not ruled out (e.g. a standby unit). |
+| 0x10–0xDF | Receivers (up to ~200 per network) — includes both TRRS-driven RXs and Camera Agent radio-side units. A Camera Agent is address-space-wise an ordinary RX: it can scale the way physical RXs do (one per camera position, potentially many around a track), unlike Gateway. |
 | 0xE0–0xFE | Group addresses (32 groups) |
 | 0xFF | Broadcast |
 
@@ -116,12 +120,47 @@ Groups are assigned meaning by the operator at pairing time. Suggested conventio
 | 0x03 | `KA_ON` | TX → RX | interval_sec (8) | Begin autonomous keep-alive with given interval. Long preamble used. |
 | 0x04 | `KA_OFF` | TX → RX | none | Cancel keep-alive. |
 | 0x05 | `PING` | TX → RX | none | Link check + telemetry request. |
-| 0x06 | `STATUS_QUERY` | TX → RX | none | Request extended status dump (more detail than ACK telemetry). |
+| 0x06 | `STATUS_QUERY` | TX → RX | none | Request extended status dump (more detail than ACK telemetry). Response now includes `ext_schema_version` — see Extension mechanism. |
 | 0x07 | `PAIR_BEACON` | TX → broadcast | candidate_net_id, candidate_addr, pairing_nonce | Pairing handshake. See pairing flow. |
-| 0x08 | `PAIR_ACCEPT` | RX → TX | confirmed_net_id, confirmed_addr | Pairing response. |
+| 0x08 | `PAIR_ACCEPT` | RX → TX | confirmed_net_id, confirmed_addr, ext_schema_version (8) | Pairing response. `ext_schema_version` lets the network learn a new node's extension support the moment it joins — see Extension mechanism. |
 | 0x10 | `RX_ACK` | RX → TX | outcome_code, telemetry (see below) | Authoritative ACK for a TX command. |
 | 0x11 | `REPEATER_ACK` | Repeater → TX | heard_seq#, repeater_battery_pct, repeater_battery_mv_scaled | Immediate "I got it, forwarding" from the repeater. Battery fields piggybacked so TX sees repeater battery on any relayed shot without needing a separate query. |
+| 0x12 | `RACE_STATE` | Gateway → broadcast or group | race_state_code (see below), scope (8) | Informational only — see **Host-driven nodes**. Not acknowledged (see Broadcast ACK policy below). |
+| 0x1E | `EXT` | any → any | extension_set_id (8), ext_code (8), ext_payload (variable) | Escape hatch into a versioned extension vocabulary — see Extension mechanism. Recipients without `ext_schema_version` covering `extension_set_id` respond `ERR_UNKNOWN_EXTENSION`, never a guess. |
 | 0x1F | `RESERVED` | — | — | — |
+
+`CMD` is 5 bits (32 possible values); `0x00` and `0x09`–`0x0F`/`0x13`–`0x1D` are currently unassigned. Any unassigned `CMD` value, including `0x00`, is handled identically to a malformed command: the recipient responds `ERR_BAD_COMMAND` rather than executing anything undefined.
+
+## Extension mechanism
+
+The base command set (`0x01`–`0x12`) is fixed and small; it isn't expected to run out of room, but it's also not where growth should happen, because new command *meanings* have to be something every node in the field already agrees on — and this network has no OTA update path, only USB-C reflashing. Two things follow from that:
+
+- **The shared vocabulary lives in the checked-in spec and gets compiled into firmware, never negotiated over the air.** A device teaching another device a new meaning at runtime (e.g. a hypothetical `DEFINE_ENUM` packet) fails exactly the way this project's own no-log-scraping principle warns against: if the defining packet is lost — normal on this link, it's why retries and tier escalation exist — the receiver is left holding a stale or default interpretation with no error and no log entry. A closed, versioned, firmware-embedded vocabulary fails loud instead (`ERR_UNKNOWN_EXTENSION`), which is the property that actually matters.
+- **Extension sets are cumulative and numbered, mirroring the pattern nikon-fleet's `firmware-archive-spec.md` already validated for diffing camera firmware capability schemas:** the full extension vocabulary a node supports at `ext_schema_version` N is the union of every extension set numbered ≤ N, not a per-feature bitmap. Checking support is one integer comparison.
+
+`extension_set_id` values, their `ext_code`s, and their payload shapes are documented here as they're defined — e.g. a future `0x01 = "SDK-actions-v1"` extension set for Camera-Agent-only operations that make no sense on a TRRS RX (adjusting a capture setting, say). None exist yet; this section exists so the mechanism is in place before the first one is needed, rather than bolted on under pressure later.
+
+Every node reports its own `ext_schema_version` in `PAIR_ACCEPT` at join time and in every extended `STATUS_QUERY` response, bumped automatically whenever it's reflashed over USB-C. This makes version skew across a fleet — some RXs updated, some not — a visible, queryable fact (a TX or Gateway can check a node's last-known `ext_schema_version` before sending it something that needs a newer one) rather than something discovered only when an `EXT` command fails.
+
+### Race state codes (payload of `RACE_STATE`)
+
+| Code | Meaning | Status |
+| --- | --- | --- |
+| 0x00 | `IDLE` | Validated — nikon-fleet's `racemonitor-live-timing-session-2026-08-08.md` |
+| 0x01 | `ARMED` | Validated — same source |
+| 0x02 | `GREEN` | Validated — same source |
+| 0x03 | `YELLOW` | Validated — same source |
+| 0x04 | `RED` | **Speculative.** Never observed across two race weekends per the source doc's own "still never observed" list. Included for roadmap completeness only; do not build a Gateway flag→action rule around it without a real capture. |
+| 0x05 | `BLACK` | **Speculative**, same caveat as `RED`. |
+| 0x06 | `WHITE_FLAG_WARNING` | **Speculative** in the sense that a literal white flag has never been observed either — this code is intended for the source doc's real validated signal (`lapsToGo` dropping off its `9999` sentinel to a small integer while the flag is still `Green`, ~1 lap of lead time), not for an actual white-colored flag. Naming risk: don't let firmware or config treat this as "the flag turned white." |
+| 0x07 | `CHECKERED` | **Requires debounce, not just an observed session-end instant.** The source doc's flag carrier renders `Finish`, not a distinct checkered value, and its headline rule is that `Finish` does not latch — it can oscillate with `Yellow` for 30+ minutes post-race. A Gateway must derive `CHECKERED`/`SESSION_END` from the validated teardown signal (`lapsToGo` 9999→0 **and** clock resets to `00:00:00`), never from `Finish` text alone, or this code will flap. |
+| 0x08 | `SESSION_END` | Validated — same source, via the teardown signal above, not via `Finish`. |
+| 0x09–0xFE | Reserved for future race states | — |
+| 0xFF | `UNKNOWN` | Gateway observed a condition it couldn't classify (new flag color, feed anomaly, etc.). Logged explicitly rather than folded into an existing code; per the no-log-scraping principle, an unrecognized state must never be silently coerced into a known one. |
+
+`scope` is 0x00 for field-wide, or an address/group the state applies to (e.g. a directed penalty flag naming one car — exact car-level addressing is out of scope for v1, since RaceMonitor's feed doesn't obviously carry per-car flag targeting; see nikon-fleet's per-series flag config notes).
+
+`RACE_STATE` is purely informational: it does not itself arm or disarm anything. Any TX or RX (including a Camera Agent's radio side) that hears it logs it, and TX displays it; the Gateway separately decides — per its own per-series flag→action config — which standard commands (`KA_ON`/`KA_OFF`/`SHOOT`, to a group address) to issue as a result. This keeps the genuinely messy part (a race flag means different things on different sanctioning bodies — see nikon-fleet's todo.md) entirely in Gateway-side config, off of RX/TX/Camera-Agent firmware.
 
 ### Outcome codes (returned in `RX_ACK`)
 
@@ -137,6 +176,7 @@ Groups are assigned meaning by the operator at pairing time. Suggested conventio
 | 0x21 | `ERR_CAMERA_UNRESPONSIVE` — Ready-capable cable only; keep-alive pulse issued but Ready state never transitioned to ready |
 | 0x30 | `ERR_BAD_COMMAND` |
 | 0x31 | `ERR_BAD_MIC` |
+| 0x32 | `ERR_UNKNOWN_EXTENSION` — `EXT` command named an `extension_set_id` beyond the recipient's `ext_schema_version`. Distinct from `ERR_BAD_COMMAND` so a sender can tell "you don't know this yet" from "that was malformed." |
 
 An RX with a 3-conductor cable plugged in cannot observe Ready-pin transitions — either because the cable doesn't carry the signal (PW N10 or equivalent into a 10-pin body) or because the camera port doesn't expose the signal in the first place (any cable into an MC-DC2 body). In either case, a successful `SHOOT` returns `OK_CMD_SENT`; the `OK_FIRED` / `ERR_NOT_READY` / `ERR_CAMERA_UNRESPONSIVE` / `WARN_*` codes are never generated. The TX UI maps `OK_CMD_SENT` to amber on the Fire LED (distinguishable from the green of `OK_FIRED`) so the operator can see at a glance which class of confirmation was achieved.
 
@@ -186,6 +226,8 @@ SET_LINK_LED_GREEN             (record: no repeater)
               IDLE
 ```
 
+This diagram covers ACK'd commands only. `RACE_STATE` (see Commands and Host-driven nodes) is fire-and-forget by design: `BUILD_PACKET` → `TRANSMIT` → `LOG EVENT` → `IDLE`, with no `WAIT_REPEATER_ACK`/`WAIT_RX_ACK`/retry stages at all — there's nothing to wait for, since nothing acknowledges it.
+
 ### RX state machine
 
 ```
@@ -206,7 +248,16 @@ VALIDATE (net_id, MIC, dedupe)
 DROP    PROCESS_CMD
           │
           ▼
-        EXECUTE (opto pulse / arm KA / respond to ping)
+        CMD RECOGNIZED?
+          │           │
+          │ no         │ yes
+          ▼           ▼
+        BUILD_RX_ACK        EXECUTE (opto pulse / arm KA / respond to ping)
+        (ERR_BAD_COMMAND)
+          │
+          ▼
+        TRANSMIT_ACK, LOG_EVENT
+          (as below)
           │
           ▼
         IF Ready-capable cable detected (4-pole plug, Ready line wired):
@@ -267,6 +318,22 @@ DROP         IS_REPEAT_BIT_SET?
 4. TX validates `PAIR_ACCEPT`, both persist (network_id, device_addr, shared_key) to flash. LEDs on both sides flash green.
 
 Simpler than real ECDH but adequate — the bootstrap key is shared across all Laura units, so an attacker within radio range during pairing could theoretically snoop the key. Mitigation: pair indoors, or accept the (very low) risk. Future versions can upgrade the bootstrap to real ECDH if the threat model warrants.
+
+## Host-driven nodes
+
+Gateway and Camera Agent are host-side software roles, not new PCBs. Each rides an existing board — TX for Gateway, RX for Camera Agent's radio side — reflashed into a host-driven firmware mode that, instead of reading buttons/OLED (TX) or driving TRRS optos (RX), exposes a serial command/event API over the same USB-C port that board already has (TX's firmware-update port, RX's `laura-config`/`laura-dump` port). Both still join the network through the existing pairing flow (button-hold, `PAIR_BEACON`/`PAIR_ACCEPT`) and store the shared key in their own flash — the host computer never touches key material, same trust boundary as every other node. See Hardware variants and Address space above for why Gateway (TX-hosted) and Camera Agent (RX-hosted) end up in different parts of the address space despite both being "a board plus a tethered host."
+
+**Gateway.** A host (e.g. RPi Zero 2 W) tethered to a TX-in-host-driven-mode, ingesting a race-timing feed (RaceMonitor's live widget, or another source with an analogous state — see nikon-fleet's `docs/racemonitor-live-timing-session-*.md` for the validated detection approach). Applies a per-event/per-series flag→action config (documented in nikon-fleet's `todo.md`, since the same flag color means a different *kind* of action on different sanctioning bodies) to decide two independent things: (1) what `RACE_STATE` code to broadcast for observability, and (2) what standard commands (`KA_ON`/`KA_OFF` to the auto-capture group, `SHOOT` to a group, etc.) to actually issue. Sited wherever the timing feed's network connection is (pit/media area), not necessarily near any camera.
+
+**Camera Agent.** A host tethered to both an RX-in-host-driven-mode *and*, separately, one or more cameras over USB, driving them via nikon-fleet's existing Nikon Remote SDK (MAID) integration rather than the TRRS/opto path. Reacts to `RACE_STATE` by starting/stopping its own software interval-capture loop. This is a different mechanism than RX-based auto-capture, not the same one over a different transport: the vendored MAID capability schema (`sdk-runtime/MaidLayer.config`, the same file nikon-fleet's `maid_layer.rs` treats as authoritative) has no interval-timer-shooting toggle under any name checked so far — only a generic single-shot remote release (`Capture`/`CaptureAsync`/`AFCaptureAsync`). So a Camera Agent doesn't flip an in-camera auto-capture switch; it calls `CaptureAsync` on its own timer, gated by `RACE_STATE`. **This is an unverified external-system assumption pending confirmation against real hardware or Nikon's SDK docs** — per the project's spec-review process, flagging rather than silently building on it.
+
+Because Camera Agent's radio side is address-space-wise an ordinary RX, it also just receives ordinary `SHOOT`/`KA_ON`/`KA_OFF` like any RX would, when a Gateway targets a group containing both TRRS RXs and Agent-backed ones — each interprets the command per its own firmware role (a TRRS RX pulses a pin; an Agent-backed one runs its capture loop). Same wire command, deliberately different execution per node type, documented here rather than left implicit — anything genuinely Agent-only (not expressible as an existing base command) is a candidate for a future `EXT` extension set instead of a new base command.
+
+**`KA_ON`/`KA_OFF` and a Camera Agent solve two different problems, and may run on the same camera.** `KA_ON`/`KA_OFF` is an anti-sleep watchdog only: it pulses the focus pin so the meter doesn't time out. It has no channel into the camera's menu, so it neither starts nor stops whatever interval-timer shooting the camera is actually configured to do — that's set up (and, today, torn down) by a human at the camera itself. A camera relying solely on RX keep-alive will keep firing per its own pre-configured interval "until someone comes and disables auto-capture" — Laura only keeps it awake while that runs, and a Gateway-issued `KA_OFF` at session end stops the watchdog pulse, not the camera's own shooting. A Camera Agent closes that gap directly: `RACE_STATE == GREEN` starts its own capture loop over USB, `SESSION_END` stops it, no human required either way — but it's a genuinely separate mechanism from keep-alive, not a fancier version of it. It also doesn't need its own anti-sleep logic: arm→green latency is measured in tens of seconds to a few minutes (see nikon-fleet's live-timing capture notes), not the hours-long pre-race wait that motivates RX keep-alive in the first place, so a Camera Agent is never exposed to the standby-timer problem it would need to guard against.
+
+Since the two mechanisms use entirely separate physical interfaces (TRRS vs. USB) and don't contend for anything, an RX and a Camera Agent can both be present on the same camera — e.g. RX for TX-triggered active-remote shots and anti-sleep backup, Camera Agent for the actual race-driven start/stop — or on different cameras, whichever a given setup calls for.
+
+**Broadcast ACK policy.** `RACE_STATE` is sent to broadcast or a group address, potentially heard by a dozen-plus nodes at once. None of them ACK it — an ACK storm from every RX replying to one broadcast simultaneously would collide on air, and observability doesn't require it: every recipient logs the event locally (same ring buffer as any other event) and it's retrievable the normal way, via `STATUS_QUERY` during the session or USB dump after. This mirrors the existing pattern where RXs don't push unsolicited state to TX outside of a command's own ACK.
 
 ## Security
 
@@ -365,6 +432,11 @@ Python script for on-device configuration over USB-C serial: set clock manually,
 - Group-fire across multiple cameras.
 - On-TX re-assignment of RX names without USB.
 
+**Race-aware automation (separate track, depends on nikon-fleet):**
+- TX and RX host-driven firmware modes, Gateway host software, `RACE_STATE` broadcast, the `EXT`/`ext_schema_version` extension mechanism.
+- Camera Agent host software — blocked on confirming the MAID interval-capture-loop approach against real hardware, and on nikon-fleet's not-yet-built settings-write capability (`todo.md`'s "Editing increment") if any config beyond `CaptureAsync` timing turns out to be needed.
+- Per-series flag→action config format (open design problem, see nikon-fleet's `todo.md` — Red/Black semantics vary by sanctioning body).
+
 **Deferred to v2:**
 - USB-C / PTP camera support (Zf, Zfc, Z30, Z50, Z50II — bodies with no wired remote port).
 - Canon / Sony release cables.
@@ -378,7 +450,13 @@ Python script for on-device configuration over USB-C serial: set clock manually,
 ## Open questions
 
 1. **Duration of the `HALF` command default** — is 500 ms of focus-pin assertion appropriate, or should it be user-configurable per shot?
-2. **Second TX support** — Vic and Billy both operating identical units within a shared network. Partly answered by separate network IDs, but group fires could benefit from coordination. Defer until both units exist.
+2. **Second TX support** — Vic and Billy both operating identical units within a shared network. Partly answered by separate network IDs, but group fires could benefit from coordination. Defer until both units exist. Now also bordered by Gateway's addressing: `0x02` is reserved for a second human-operated TX specifically, and Gateway(s) get their own `0x03`–`0x0F` range instead, so the two can coexist — worth a sanity check once a second TX and a Gateway both actually exist on one network.
+3. **Does MAID actually expose an interval-capture-loop-friendly path?** Confirmed so far only from the vendored `MaidLayer.config` schema, not from a live camera test: no interval-timer-shooting toggle exists under any spelling checked, but `Capture`/`CaptureAsync`/`AFCaptureAsync` do. Needs a real-hardware check before Camera Agent firmware/software is built around it.
+4. **Per-car / directed `RACE_STATE` scope** — the `scope` field reserves room for a directed event (e.g. a black flag shown to one car), but it's not established that RaceMonitor's feed distinguishes field-wide vs. per-car flags at all. Needs checking against a live feed during a session with a directed flag.
+5. **Host-driven-mode pairing at a fixed, unattended site** — RX/repeater pairing assumes a person holding a button. A Gateway or Camera Agent radio is more likely to be paired once at home and then left running all weekend; probably fine as-is, but worth confirming the pairing flow doesn't assume physical proximity to the TX at pairing time in a way that's awkward for either.
+6. **First real `extension_set_id`.** The `EXT` mechanism is specified with no extension sets defined yet — the first concrete Camera-Agent-only need (once one exists) should be the thing that defines `0x01`, rather than guessing at a shape in the abstract.
+7. **Group-addressed command ACK collision — blocks Camera Agent/Gateway implementation, not just a nit.** `SHOOT`/`KA_ON`/`KA_OFF` all unconditionally "expect `RX_ACK`," with no carve-out for group/broadcast destinations, yet Gateway's whole mechanism (Host-driven nodes, above) is sending these to *group* addresses so both TRRS RXs and Camera-Agent-backed RXs react together. `product-spec.md` already lists general group-fire as only "possibly v1.1." Nothing here specifies what happens when every RX in a group ACKs the same command in the same tier-scaled window — the TX state machine has one `WAIT_RX_ACK` state expecting one reply, not several. Needs a real decision: make group commands fire-and-forget (losing per-camera confirmation), or design a collision-avoidance ACK scheme (e.g. slots staggered by address).
+8. **The 20-byte on-unit log record was never extended for `RACE_STATE` or `EXT`.** The existing record shape (outcome code, retry count, two RSSI fields, etc.) fits a request/ACK shot event; `RACE_STATE` has none of those fields, and `EXT`'s variable-length payload can't fit a fixed 20-byte record at all. "Every recipient logs the event locally" (Host-driven nodes, above) is currently asserted, not specified — needs an actual byte layout (or explicit N/A fields) for both, plus JSONL dump examples alongside the existing `SHOOT` example.
 
 ## Resolved decisions
 
