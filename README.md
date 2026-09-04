@@ -10,6 +10,10 @@ The goal, in one sentence: **press the button, know for sure the camera fired �
 - [Protocol spec](docs/protocol.md) — packet format, state machines, log formats. The contract between hardware and firmware.
 - [Bring-up plan](docs/bringup.md) — how we get from zero to working prototype; dev board choice, phased approach, BOM, toolchain.
 
+## Firmware
+
+[firmware/](firmware/) — bare-metal STM32WLE5JC firmware, buildable headlessly (no STM32CubeIDE/CubeMX required — see `firmware/README.md`). Currently a toolchain sanity check only; Phase 1's radio echo is next.
+
 ## Status
 
-Design phase. No hardware or firmware yet.
+No hardware yet. Firmware toolchain stood up and build-verified; still pre-Phase-1 (see bringup.md) — no protocol code written.

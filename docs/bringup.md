@@ -162,9 +162,19 @@ One PCB spin (RX + TX, small quantity, assembled) is ~$500 by itself. Bring-up o
 
 ### Toolchain
 
-- **STM32CubeIDE** (free, ST's official IDE, based on Eclipse) *or* **PlatformIO** with the STM32 platform installed (lighter-weight, VS-Code-based, arguably better DX for anyone already in VS Code).
-- Either one supports flash-and-debug via the Wio-E5 mini's onboard USB-to-SWD bridge. No external ST-Link needed.
-- **STM32CubeMX** for generating peripheral init code (clocks, GPIO, UART, SPI, I²C, RTC, LoRa SubGHz). Regenerates without overwriting user code regions.
+**STM32CubeIDE, not PlatformIO — verified, not just preferred.** bringup.md originally presented these as interchangeable ("either one"). They aren't, for this chip: PlatformIO's `ststm32` platform (checked directly against the installed package, v20.0.0) only declares `arduino` and `zephyr` as supported frameworks for every STM32WL-family board it knows, `lora_e5_mini` included — confirmed by actually trying to build a minimal `framework = stm32cube` project against `board = lora_e5_mini`, which fails with `KeyError: 'framework-stm32cubewl'` because that package simply isn't declared for this platform release. Other STM32 families (F4, L4, G4, H7, ...) do get a bare-HAL `stm32cube` framework in PlatformIO; WL doesn't, at least not yet.
+
+That matters because both of PlatformIO's actual options conflict with an explicit decision already made elsewhere in this doc: `arduino` is the framework this project rejects outright ("hides exactly the things we need to tune"), and `zephyr` is a real RTOS, contradicting "No RTOS in v1" above. So PlatformIO isn't a viable alternate path here without walking back one of those two decisions — **STM32CubeIDE with a STM32CubeMX-generated bare-HAL project is the only toolchain that satisfies both constraints simultaneously**, not just the first choice.
+
+- **STM32CubeIDE** (free, ST's official IDE, based on Eclipse). Flash-and-debug via the Wio-E5 mini's onboard USB-to-SWD bridge — no external ST-Link needed.
+- **STM32CubeMX** for generating peripheral init code (clocks, GPIO, UART, SPI, I²C, RTC, LoRa SubGHz). Regenerates without overwriting user code regions. Both are GUI installers, awkward on a machine you're not fully authenticated on.
+
+**A headless alternative exists and is verified working, for exactly that situation: `firmware/` in this repo, building today with `make`.** No STM32CubeIDE, no STM32CubeMX, no ST account, no GUI installer — built and end-to-end tested in this session (a real `HAL_Init()`-only image compiles and links for STM32WLE5JC, `2096`/`16`/`1568` bytes text/data/bss). Two pieces, both verified individually rather than assumed:
+
+- **Compiler: ARM's own prebuilt "Arm GNU Toolchain"** (`arm-none-eabi-gcc` + newlib), downloaded directly from `developer.arm.com` as a plain tarball — no account, no installer, just extract and add `bin/` to `PATH`. **Not** Homebrew's `arm-none-eabi-gcc` formula: checked directly, that formula ships GCC alone with no newlib dependency at all (`brew deps` lists binutils/gmp/isl/libmpc/etc., no C library), and there's no separate `arm-none-eabi-newlib` formula to fill the gap — a build against it fails immediately on a missing `stdint.h`.
+- **HAL/CMSIS/radio driver: ST's own sources, vendored as git submodules**, not hand-rolled — `firmware/vendor/cmsis-core`, `cmsis-device-wl`, `stm32wlxx-hal-driver`, `subghz-phy` (pinned to the same commits STM32CubeWL's own manifest uses, where applicable). These are plain public GitHub repos, `git submodule update --init` is enough.
+
+This doesn't replace STM32CubeMX's peripheral-configuration convenience (clock tree config, pin assignment UI) — it's a bare, hand-written `Makefile` project, currently just `HAL_Init()` and nothing else. It exists so Phase 1 can start without the GUI-install blocker; peripheral init code (UART, the SubGHz radio) still has to be written by hand against the HAL, the same code CubeMX would otherwise have generated. See `firmware/README.md` for build instructions.
 
 ### Language and abstractions
 
